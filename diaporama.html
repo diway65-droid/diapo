@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Diaporama — Photobooth Live</title>
+<meta name="theme-color" content="#0d1117">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Diaporama">
+<link rel="manifest" href="manifest-diaporama.json">
+<link rel="icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,600;1,9..144,600&family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
+
+<!-- SDKs Firebase officiels -->
+<script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore-compat.js"></script>
+
+<style>
+  :root {
+    --bg-dark: #0a0d14;
+    --gold: #bfa15f;
+    --gold-bright: #e5c378;
+    --text-light: #f5f6fa;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background-color: var(--bg-dark);
+    color: var(--text-light);
+    font-family: 'Manrope', sans-serif;
+    overflow: hidden;
+  }
+
+  /* Conteneur principal plein écran */
+  #stage {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at center, #1b2230 0%, #0a0d14 100%);
+  }
+
+  /* Affichage des photos avec fondu croisé */
+  .slide {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0;
+    transition: opacity 0.8s ease-in-out, transform 0.8s ease-out;
+    transform: scale(0.96);
+    pointer-events: none;
+  }
+  .slide.active {
+    opacity: 1;
+    transform: scale(1);
+    pointer-events: auto;
+  }
+
+  .slide img {
+    max-height: 90vh;
+    max-width: 90vw;
+    object-fit: contain;
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.7), 0 0 0 1px rgba(191,161,95,0.25);
+  }
+
+  /* Alerte nouvelle photo */
+  #new-badge {
+    position: absolute;
+    top: 32px;
+    background: rgba(191, 161, 95, 0.95);
+    color: #141a26;
+    font-weight: 800;
+    font-size: clamp(1rem, 2.2vw, 1.4rem);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: 10px 28px;
+    border-radius: 40px;
+    box-shadow: 0 10px 30px rgba(191, 161, 95, 0.5);
+    display: none;
+    z-index: 10;
+    animation: popBadge 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275) infinite alternate;
+  }
+  @keyframes popBadge {
+    from { transform: scale(1); }
+    to { transform: scale(1.08); }
+  }
+
+  /* Message d'attente initial */
+  #empty-state {
+    text-align: center;
+    max-width: 500px;
+    padding: 24px;
+    z-index: 5;
+  }
+  #empty-state h1 {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: clamp(2rem, 5vw, 3rem);
+    color: var(--gold-bright);
+    margin: 0 0 12px;
+  }
+  #empty-state p {
+    color: #8c93a8;
+    font-size: 1.1rem;
+    line-height: 1.5;
+  }
+
+  /* Barre de contrôle discrète */
+  .hud {
+    position: fixed;
+    bottom: 18px; right: 20px;
+    display: flex; gap: 10px;
+    z-index: 20;
+    opacity: 0.25;
+    transition: opacity 0.3s;
+  }
+  .hud:hover { opacity: 1; }
+  .hud button {
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.2);
+    color: #fff;
+    padding: 8px 14px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+  }
+  .hud button:hover { background: rgba(191,161,95,0.4); }
+
+  #counter {
+    position: fixed;
+    bottom: 22px; left: 24px;
+    font-size: 0.85rem;
+    color: rgba(255,255,255,0.4);
+    z-index: 20;
+  }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="new-badge">📸 Nouvelle photo en direct !</div>
+
+  <div id="empty-state">
+    <h1>En attente des photos…</h1>
+    <p>Prenez votre première photo sur la borne pour lancer le diaporama en direct !</p>
+  </div>
+
+  <div id="slide-a" class="slide active"></div>
+  <div id="slide-b" class="slide"></div>
+</div>
+
+<div id="counter">0 photo</div>
+
+<div class="hud">
+  <button id="btn-fullscreen">⛶ Plein écran</button>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+
+  // ==========================================
+  // ANTI-MISE EN VEILLE (WAKE LOCK)
+  // ==========================================
+  let wakeLock = null;
+  async function requestWakeLock() {
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLock = await navigator.wakeLock.request('screen');
+        console.log('☀️ Diaporama : Écran maintenu allumé');
+      } catch (err) {
+        console.warn(`Wake Lock indisponible : ${err.message}`);
+      }
+    }
+  }
+
+  // Activer dès le premier clic n'importe où
+  document.addEventListener('pointerdown', () => {
+    if (!wakeLock) requestWakeLock();
+  }, { once: true });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') requestWakeLock();
+  });
+
+  // ==========================================
+  // PLEIN ÉCRAN
+  // ==========================================
+  $('btn-fullscreen').addEventListener('click', () => {
+    requestWakeLock();
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(err => console.warn(err));
+    } else {
+      document.exitFullscreen().catch(err => console.warn(err));
+    }
+  });
+
+  // ==========================================
+  // FIREBASE CONFIGURATION
+  // ==========================================
+  const firebaseConfig = {
+    apiKey: "AIzaSyAHCUcWse5QpNPxWQKYZqT-4elxIxkAO3s",
+    authDomain: "mimie-doudou-40-ans.firebaseapp.com",
+    projectId: "mimie-doudou-40-ans",
+    storageBucket: "mimie-doudou-40-ans.firebasestorage.app",
+    messagingSenderId: "745270670876",
+    appId: "1:745270670876:web:7bdadd220d43fd7ec691d9"
+  };
+
+  if (!firebase.apps.length) {
+    firebase.initializeApp(firebaseConfig);
+  }
+  const db = firebase.firestore();
+
+  // ==========================================
+  // DIAPORAMA LOGIC (4s par photo + aléatoire)
+  // ==========================================
+  const INTERVAL_TIME = 4000;
+  let allPhotos = [];
+  let playlist = [];
+  let currentSlideEl = $('slide-a');
+  let nextSlideEl = $('slide-b');
+  let loopTimer = null;
+  let isInitialLoad = true;
+
+  function shuffle(array) {
+    const arr = array.slice();
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
+  function getNextPhotoUrl() {
+    if (playlist.length === 0) {
+      playlist = shuffle(allPhotos);
+    }
+    return playlist.pop();
+  }
+
+  function displayPhoto(url, isInstantNew = false) {
+    $('empty-state').style.display = 'none';
+
+    // Pré-chargement de l'image
+    const img = new Image();
+    img.src = url;
+    img.onload = () => {
+      nextSlideEl.innerHTML = '';
+      nextSlideEl.appendChild(img);
+
+      // Bascule de transition (fondu)
+      nextSlideEl.classList.add('active');
+      currentSlideEl.classList.remove('active');
+
+      // Inversion des conteneurs
+      const temp = currentSlideEl;
+      currentSlideEl = nextSlideEl;
+      nextSlideEl = temp;
+
+      if (isInstantNew) {
+        $('new-badge').style.display = 'block';
+        setTimeout(() => {
+          $('new-badge').style.display = 'none';
+        }, 3500);
+      }
+    };
+  }
+
+  function startLoop() {
+    if (loopTimer) clearInterval(loopTimer);
+    loopTimer = setInterval(() => {
+      if (allPhotos.length > 0) {
+        displayPhoto(getNextPhotoUrl());
+      }
+    }, INTERVAL_TIME);
+  }
+
+  // ==========================================
+  // ÉCOUTE FIRESTORE TEMPS RÉEL
+  // ==========================================
+  db.collection('photos')
+    .orderBy('createdAt', 'asc')
+    .onSnapshot((snapshot) => {
+      let hasNewDoc = false;
+      let latestUrl = null;
+
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const data = change.doc.data();
+          if (data && data.url) {
+            allPhotos.push(data.url);
+            latestUrl = data.url;
+            hasNewDoc = true;
+          }
+        }
+      });
+
+      $('counter').textContent = `${allPhotos.length} photo${allPhotos.length > 1 ? 's' : ''}`;
+
+      if (allPhotos.length === 0) return;
+
+      if (isInitialLoad) {
+        isInitialLoad = false;
+        playlist = shuffle(allPhotos);
+        displayPhoto(getNextPhotoUrl());
+        startLoop();
+      } else if (hasNewDoc && latestUrl) {
+        // Interruption immédiate : on affiche la photo fraîchement prise
+        displayPhoto(latestUrl, true);
+        startLoop(); // Remise à zéro du minuteur de 4s
+      }
+    }, (error) => {
+      console.error("Erreur Firestore :", error);
+    });
+
+  // ==========================================
+  // SERVICE WORKER REGISTRATION
+  // ==========================================
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw-diaporama.js').catch(err => {
+        console.warn('Erreur SW Diaporama :', err);
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>
