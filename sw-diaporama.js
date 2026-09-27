@@ -2,7 +2,7 @@ const CACHE_VERSION = 'diapo-v1';
 const CACHE_NAME = 'photobooth-diaporama-' + CACHE_VERSION;
 
 const APP_SHELL = [
-  './diaporama.html',
+  './index.html',
   './manifest-diaporama.json',
   './icon-192.png',
   './icon-512.png'
